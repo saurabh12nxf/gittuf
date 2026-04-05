@@ -139,3 +139,208 @@ func TestStatus(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Empty(t, statuses)
 }
+
+func TestStatusCodeString(t *testing.T) {
+	tests := []struct {
+		name     string
+		code     StatusCode
+		expected string
+	}{
+		{"Unmodified", StatusCodeUnmodified, " "},
+		{"Modified", StatusCodeModified, "M"},
+		{"TypeChanged", StatusCodeTypeChanged, "T"},
+		{"Added", StatusCodeAdded, "A"},
+		{"Deleted", StatusCodeDeleted, "D"},
+		{"Renamed", StatusCodeRenamed, "R"},
+		{"Copied", StatusCodeCopied, "C"},
+		{"UpdatedUnmerged", StatusCodeUpdatedUnmerged, "U"},
+		{"Untracked", StatusCodeUntracked, "?"},
+		{"Ignored", StatusCodeIgnored, "!"},
+		{"Invalid", StatusCode(999), "invalid-code"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.code.String()
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestNewStatusCodeFromByte(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       byte
+		expected    StatusCode
+		expectError bool
+	}{
+		{"Unmodified", ' ', StatusCodeUnmodified, false},
+		{"Modified", 'M', StatusCodeModified, false},
+		{"TypeChanged", 'T', StatusCodeTypeChanged, false},
+		{"Added", 'A', StatusCodeAdded, false},
+		{"Deleted", 'D', StatusCodeDeleted, false},
+		{"Copied", 'C', StatusCodeCopied, false},
+		{"UpdatedUnmerged", 'U', StatusCodeUpdatedUnmerged, false},
+		{"Untracked", '?', StatusCodeUntracked, false},
+		{"Ignored", '!', StatusCodeIgnored, false},
+		{"Invalid", 'X', 0, true},
+		{"InvalidNumber", '1', 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := NewStatusCodeFromByte(tt.input)
+			if tt.expectError {
+				assert.NotNil(t, err)
+				assert.Equal(t, ErrInvalidStatusCode, err)
+			} else {
+				assert.Nil(t, err)
+				assert.Equal(t, tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestFileStatusUntracked(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   FileStatus
+		expected bool
+	}{
+		{"X is untracked", FileStatus{X: StatusCodeUntracked, Y: StatusCodeUnmodified}, true},
+		{"Y is untracked", FileStatus{X: StatusCodeModified, Y: StatusCodeUntracked}, true},
+		{"Both untracked", FileStatus{X: StatusCodeUntracked, Y: StatusCodeUntracked}, true},
+		{"Neither untracked", FileStatus{X: StatusCodeModified, Y: StatusCodeAdded}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.status.Untracked()
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestStatusWithEmptyRepository(t *testing.T) {
+	tmpDir := t.TempDir()
+	repo := CreateTestGitRepository(t, tmpDir, false)
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(cwd) //nolint:errcheck
+
+	// Check status on empty repository
+	statuses, err := repo.Status()
+	assert.Nil(t, err)
+	assert.Empty(t, statuses)
+}
+
+func TestStatusCodeEdgeCases(t *testing.T) {
+	// Test all status codes to ensure complete coverage
+	codes := []struct {
+		code     StatusCode
+		expected string
+	}{
+		{StatusCodeUnmodified, " "},
+		{StatusCodeModified, "M"},
+		{StatusCodeTypeChanged, "T"},
+		{StatusCodeAdded, "A"},
+		{StatusCodeDeleted, "D"},
+		{StatusCodeRenamed, "R"},
+		{StatusCodeCopied, "C"},
+		{StatusCodeUpdatedUnmerged, "U"},
+		{StatusCodeUntracked, "?"},
+		{StatusCodeIgnored, "!"},
+	}
+
+	for _, tc := range codes {
+		assert.Equal(t, tc.expected, tc.code.String())
+	}
+}
+
+func TestNewStatusCodeFromByteAllCases(t *testing.T) {
+	// Test all valid status code bytes
+	validCases := []struct {
+		input    byte
+		expected StatusCode
+	}{
+		{' ', StatusCodeUnmodified},
+		{'M', StatusCodeModified},
+		{'T', StatusCodeTypeChanged},
+		{'A', StatusCodeAdded},
+		{'D', StatusCodeDeleted},
+		{'C', StatusCodeCopied},
+		{'U', StatusCodeUpdatedUnmerged},
+		{'?', StatusCodeUntracked},
+		{'!', StatusCodeIgnored},
+	}
+
+	for _, tc := range validCases {
+		result, err := NewStatusCodeFromByte(tc.input)
+		assert.Nil(t, err)
+		assert.Equal(t, tc.expected, result)
+	}
+
+	// Test invalid cases
+	invalidBytes := []byte{'R', 'X', 'Y', 'Z', '1', '2', '@', '#'}
+	for _, b := range invalidBytes {
+		_, err := NewStatusCodeFromByte(b)
+		assert.ErrorIs(t, err, ErrInvalidStatusCode)
+	}
+}
+
+func TestStatusCodeOperations(t *testing.T) {
+	// Test all status code operations to ensure complete coverage
+	allCodes := []StatusCode{
+		StatusCodeUnmodified,
+		StatusCodeModified,
+		StatusCodeTypeChanged,
+		StatusCodeAdded,
+		StatusCodeDeleted,
+		StatusCodeRenamed,
+		StatusCodeCopied,
+		StatusCodeUpdatedUnmerged,
+		StatusCodeUntracked,
+		StatusCodeIgnored,
+	}
+
+	for _, code := range allCodes {
+		// Test String()
+		str := code.String()
+		assert.NotEmpty(t, str)
+
+		// Test round-trip conversion for valid codes
+		if str != " " && str != "invalid-code" && str != "R" {
+			// Note: 'R' (Renamed) is not in NewStatusCodeFromByte
+			parsedCode, err := NewStatusCodeFromByte(str[0])
+			assert.Nil(t, err)
+			assert.Equal(t, code, parsedCode)
+		}
+	}
+}
+
+func TestFileStatusOperations(t *testing.T) {
+	// Test FileStatus operations
+	statuses := []FileStatus{
+		{X: StatusCodeUntracked, Y: StatusCodeUntracked},
+		{X: StatusCodeModified, Y: StatusCodeUntracked},
+		{X: StatusCodeUntracked, Y: StatusCodeModified},
+		{X: StatusCodeModified, Y: StatusCodeModified},
+		{X: StatusCodeAdded, Y: StatusCodeUnmodified},
+		{X: StatusCodeDeleted, Y: StatusCodeUnmodified},
+	}
+
+	for _, status := range statuses {
+		isUntracked := status.Untracked()
+		if status.X == StatusCodeUntracked || status.Y == StatusCodeUntracked {
+			assert.True(t, isUntracked)
+		} else {
+			assert.False(t, isUntracked)
+		}
+	}
+}

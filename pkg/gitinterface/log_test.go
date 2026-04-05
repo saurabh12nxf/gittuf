@@ -5,6 +5,7 @@ package gitinterface
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"testing"
 
@@ -356,4 +357,89 @@ func createChildrenCommits(t *testing.T, repo *Repository, treeHashes []Hash, pa
 		children = append(children, commitID)
 	}
 	return children
+}
+
+func TestGetCommitsBetweenRangeEdgeCases(t *testing.T) {
+	tempDir := t.TempDir()
+	repo := CreateTestGitRepository(t, tempDir, false)
+
+	refName := "refs/heads/main"
+	treeBuilder := NewTreeBuilder(repo)
+
+	emptyTreeID, err := treeBuilder.WriteTreeFromEntries(nil)
+	require.Nil(t, err)
+
+	t.Run("single commit range", func(t *testing.T) {
+		commitHash, err := repo.Commit(emptyTreeID, "refs/heads/single", "Single commit\n", false)
+		require.Nil(t, err)
+
+		commits, err := repo.GetCommitsBetweenRange(commitHash, ZeroHash)
+		assert.Nil(t, err)
+		assert.Equal(t, []Hash{commitHash}, commits)
+	})
+
+	t.Run("empty range", func(t *testing.T) {
+		commitHash, err := repo.Commit(emptyTreeID, "refs/heads/empty-range", "Commit\n", false)
+		require.Nil(t, err)
+
+		// Same commit as both new and old
+		commits, err := repo.GetCommitsBetweenRange(commitHash, commitHash)
+		assert.Nil(t, err)
+		assert.Empty(t, commits)
+	})
+
+	t.Run("linear history", func(t *testing.T) {
+		var commits []Hash
+		for i := 0; i < 10; i++ {
+			commitHash, err := repo.Commit(emptyTreeID, refName, fmt.Sprintf("Commit %d\n", i), false)
+			require.Nil(t, err)
+			commits = append(commits, commitHash)
+		}
+
+		rangeCommits, err := repo.GetCommitsBetweenRange(commits[9], commits[0])
+		assert.Nil(t, err)
+		assert.Len(t, rangeCommits, 9) // Should not include commits[0]
+	})
+
+	t.Run("git execution error", func(t *testing.T) {
+		tempDir := t.TempDir()
+		badRepo := CreateTestGitRepository(t, tempDir, false)
+		os.RemoveAll(badRepo.gitDirPath) // Corrupt the repository
+
+		_, err := badRepo.GetCommitsBetweenRange(ZeroHash, ZeroHash)
+		assert.NotNil(t, err)
+	})
+}
+
+func TestGetCommitsBetweenRangeWithSingleCommit(t *testing.T) {
+	tmpDir := t.TempDir()
+	repo := CreateTestGitRepository(t, tmpDir, false)
+
+	emptyTreeID, err := repo.EmptyTree()
+	require.Nil(t, err)
+
+	commit1, err := repo.Commit(emptyTreeID, "refs/heads/main", "First\n", false)
+	require.Nil(t, err)
+
+	// Get commits from beginning to commit1
+	commits, err := repo.GetCommitsBetweenRange(ZeroHash, commit1)
+	assert.Nil(t, err)
+	assert.Len(t, commits, 1)
+	assert.Equal(t, commit1, commits[0])
+}
+
+func TestGetCommitsBetweenRangeWithIdenticalCommits(t *testing.T) {
+	tmpDir := t.TempDir()
+	repo := CreateTestGitRepository(t, tmpDir, false)
+
+	emptyTreeID, err := repo.EmptyTree()
+	require.Nil(t, err)
+
+	commit1, err := repo.Commit(emptyTreeID, "refs/heads/main", "First\n", false)
+	require.Nil(t, err)
+
+	// Get commits between same commit (should be empty)
+	commits, err := repo.GetCommitsBetweenRange(commit1, commit1)
+	assert.Nil(t, err)
+	assert.Empty(t, commits)
 }

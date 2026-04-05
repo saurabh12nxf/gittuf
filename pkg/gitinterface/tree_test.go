@@ -4,6 +4,7 @@
 package gitinterface
 
 import (
+	"fmt"
 	"os"
 	"testing"
 
@@ -1121,4 +1122,511 @@ func TestEnsureIsTree(t *testing.T) {
 
 	err = repo.ensureIsTree(blobID)
 	assert.NotNil(t, err)
+}
+
+func TestEnsureIsTreeError(t *testing.T) {
+	tmpDir := t.TempDir()
+	repo := CreateTestGitRepository(t, tmpDir, true)
+
+	// Try with a blob instead of tree
+	blobID, err := repo.WriteBlob([]byte("test"))
+	require.Nil(t, err)
+
+	err = repo.ensureIsTree(blobID)
+	assert.NotNil(t, err)
+	assert.Contains(t, err.Error(), "is not a tree object")
+}
+
+func TestGetPathIDInTreeError(t *testing.T) {
+	tmpDir := t.TempDir()
+	repo := CreateTestGitRepository(t, tmpDir, false)
+
+	treeBuilder := NewTreeBuilder(repo)
+	blobID, err := repo.WriteBlob([]byte("test"))
+	require.Nil(t, err)
+
+	treeID, err := treeBuilder.WriteTreeFromEntries([]TreeEntry{
+		NewEntryBlob("file.txt", blobID),
+	})
+	require.Nil(t, err)
+
+	// Try to get non-existent path
+	_, err = repo.GetPathIDInTree("nonexistent.txt", treeID)
+	assert.NotNil(t, err)
+}
+
+func TestGetTreeItemsError(t *testing.T) {
+	tmpDir := t.TempDir()
+	repo := CreateTestGitRepository(t, tmpDir, false)
+
+	// Try with a blob instead of tree
+	blobID, err := repo.WriteBlob([]byte("test"))
+	require.Nil(t, err)
+
+	_, err = repo.GetTreeItems(blobID)
+	assert.NotNil(t, err)
+}
+
+func TestGetAllFilesInTreeError(t *testing.T) {
+	tmpDir := t.TempDir()
+	repo := CreateTestGitRepository(t, tmpDir, false)
+
+	// Try with a blob instead of tree
+	blobID, err := repo.WriteBlob([]byte("test"))
+	require.Nil(t, err)
+
+	_, err = repo.GetAllFilesInTree(blobID)
+	assert.NotNil(t, err)
+}
+
+func TestNewEntryBlobWithPermissions(t *testing.T) {
+	tmpDir := t.TempDir()
+	repo := CreateTestGitRepository(t, tmpDir, false)
+
+	blobID, err := repo.WriteBlob([]byte("test"))
+	require.Nil(t, err)
+
+	// Test with executable permissions
+	entry := NewEntryBlobWithPermissions("script.sh", blobID, 0o755)
+	assert.Equal(t, "script.sh", entry.getName())
+	assert.Equal(t, blobID, entry.getID())
+
+	// Test with regular file permissions
+	entry2 := NewEntryBlobWithPermissions("file.txt", blobID, 0o644)
+	assert.Equal(t, "file.txt", entry2.getName())
+	assert.Equal(t, blobID, entry2.getID())
+}
+
+func TestNewEntryTree(t *testing.T) {
+	tmpDir := t.TempDir()
+	repo := CreateTestGitRepository(t, tmpDir, false)
+
+	treeBuilder := NewTreeBuilder(repo)
+	blobID, err := repo.WriteBlob([]byte("test"))
+	require.Nil(t, err)
+
+	treeID, err := treeBuilder.WriteTreeFromEntries([]TreeEntry{
+		NewEntryBlob("file.txt", blobID),
+	})
+	require.Nil(t, err)
+
+	entry := NewEntryTree("subdir", treeID)
+	assert.Equal(t, "subdir", entry.getName())
+	assert.Equal(t, treeID, entry.getID())
+}
+
+func TestEmptyTreeEdgeCases(t *testing.T) {
+	tempDir := t.TempDir()
+	repo := CreateTestGitRepository(t, tempDir, false)
+
+	t.Run("get empty tree multiple times", func(t *testing.T) {
+		emptyTree1, err := repo.EmptyTree()
+		assert.Nil(t, err)
+
+		emptyTree2, err := repo.EmptyTree()
+		assert.Nil(t, err)
+
+		// Should return the same hash
+		assert.Equal(t, emptyTree1, emptyTree2)
+	})
+
+	t.Run("empty tree is valid tree object", func(t *testing.T) {
+		emptyTree, err := repo.EmptyTree()
+		assert.Nil(t, err)
+
+		objType, err := repo.GetObjectType(emptyTree)
+		assert.Nil(t, err)
+		assert.Equal(t, TreeObjectType, objType)
+	})
+}
+
+func TestGetPathIDInTreeEdgeCases(t *testing.T) {
+	tempDir := t.TempDir()
+	repo := CreateTestGitRepository(t, tempDir, false)
+
+	treeBuilder := NewTreeBuilder(repo)
+	blobID, err := repo.WriteBlob([]byte("test content"))
+	require.Nil(t, err)
+
+	t.Run("nested path in tree", func(t *testing.T) {
+		// Create nested tree structure
+		subTreeID, err := treeBuilder.WriteTreeFromEntries([]TreeEntry{
+			NewEntryBlob("file.txt", blobID),
+		})
+		require.Nil(t, err)
+
+		treeID, err := treeBuilder.WriteTreeFromEntries([]TreeEntry{
+			NewEntryTree("subdir", subTreeID),
+		})
+		require.Nil(t, err)
+
+		// Get nested file
+		fileID, err := repo.GetPathIDInTree("subdir/file.txt", treeID)
+		assert.Nil(t, err)
+		assert.Equal(t, blobID, fileID)
+	})
+
+	t.Run("root level file", func(t *testing.T) {
+		treeID, err := treeBuilder.WriteTreeFromEntries([]TreeEntry{
+			NewEntryBlob("root.txt", blobID),
+		})
+		require.Nil(t, err)
+
+		fileID, err := repo.GetPathIDInTree("root.txt", treeID)
+		assert.Nil(t, err)
+		assert.Equal(t, blobID, fileID)
+	})
+}
+
+func TestGetTreeItemsEdgeCases(t *testing.T) {
+	tempDir := t.TempDir()
+	repo := CreateTestGitRepository(t, tempDir, false)
+
+	treeBuilder := NewTreeBuilder(repo)
+
+	t.Run("tree with multiple items", func(t *testing.T) {
+		blob1, err := repo.WriteBlob([]byte("content1"))
+		require.Nil(t, err)
+		blob2, err := repo.WriteBlob([]byte("content2"))
+		require.Nil(t, err)
+		blob3, err := repo.WriteBlob([]byte("content3"))
+		require.Nil(t, err)
+
+		treeID, err := treeBuilder.WriteTreeFromEntries([]TreeEntry{
+			NewEntryBlob("file1.txt", blob1),
+			NewEntryBlob("file2.txt", blob2),
+			NewEntryBlob("file3.txt", blob3),
+		})
+		require.Nil(t, err)
+
+		items, err := repo.GetTreeItems(treeID)
+		assert.Nil(t, err)
+		assert.Len(t, items, 3)
+		assert.Equal(t, blob1, items["file1.txt"])
+		assert.Equal(t, blob2, items["file2.txt"])
+		assert.Equal(t, blob3, items["file3.txt"])
+	})
+
+	t.Run("tree with subdirectories", func(t *testing.T) {
+		blobID, err := repo.WriteBlob([]byte("test"))
+		require.Nil(t, err)
+
+		subTreeID, err := treeBuilder.WriteTreeFromEntries([]TreeEntry{
+			NewEntryBlob("nested.txt", blobID),
+		})
+		require.Nil(t, err)
+
+		treeID, err := treeBuilder.WriteTreeFromEntries([]TreeEntry{
+			NewEntryTree("subdir", subTreeID),
+			NewEntryBlob("root.txt", blobID),
+		})
+		require.Nil(t, err)
+
+		items, err := repo.GetTreeItems(treeID)
+		assert.Nil(t, err)
+		assert.Len(t, items, 2)
+		assert.Equal(t, subTreeID, items["subdir"])
+		assert.Equal(t, blobID, items["root.txt"])
+	})
+}
+
+func TestGetAllFilesInTreeEdgeCases(t *testing.T) {
+	tempDir := t.TempDir()
+	repo := CreateTestGitRepository(t, tempDir, false)
+
+	treeBuilder := NewTreeBuilder(repo)
+
+	t.Run("deeply nested files", func(t *testing.T) {
+		blobID, err := repo.WriteBlob([]byte("deep content"))
+		require.Nil(t, err)
+
+		// Create nested structure: dir1/dir2/dir3/file.txt
+		level3Tree, err := treeBuilder.WriteTreeFromEntries([]TreeEntry{
+			NewEntryBlob("file.txt", blobID),
+		})
+		require.Nil(t, err)
+
+		level2Tree, err := treeBuilder.WriteTreeFromEntries([]TreeEntry{
+			NewEntryTree("dir3", level3Tree),
+		})
+		require.Nil(t, err)
+
+		level1Tree, err := treeBuilder.WriteTreeFromEntries([]TreeEntry{
+			NewEntryTree("dir2", level2Tree),
+		})
+		require.Nil(t, err)
+
+		rootTree, err := treeBuilder.WriteTreeFromEntries([]TreeEntry{
+			NewEntryTree("dir1", level1Tree),
+		})
+		require.Nil(t, err)
+
+		files, err := repo.GetAllFilesInTree(rootTree)
+		assert.Nil(t, err)
+		assert.Len(t, files, 1)
+		assert.Equal(t, blobID, files["dir1/dir2/dir3/file.txt"])
+	})
+
+	t.Run("mixed files and directories", func(t *testing.T) {
+		blob1, err := repo.WriteBlob([]byte("root content"))
+		require.Nil(t, err)
+		blob2, err := repo.WriteBlob([]byte("sub content"))
+		require.Nil(t, err)
+
+		subTree, err := treeBuilder.WriteTreeFromEntries([]TreeEntry{
+			NewEntryBlob("sub.txt", blob2),
+		})
+		require.Nil(t, err)
+
+		rootTree, err := treeBuilder.WriteTreeFromEntries([]TreeEntry{
+			NewEntryBlob("root.txt", blob1),
+			NewEntryTree("subdir", subTree),
+		})
+		require.Nil(t, err)
+
+		files, err := repo.GetAllFilesInTree(rootTree)
+		assert.Nil(t, err)
+		assert.Len(t, files, 2)
+		assert.Equal(t, blob1, files["root.txt"])
+		assert.Equal(t, blob2, files["subdir/sub.txt"])
+	})
+}
+
+func TestTreeBuilderComprehensive(t *testing.T) {
+	tempDir := t.TempDir()
+	repo := CreateTestGitRepository(t, tempDir, false)
+
+	treeBuilder := NewTreeBuilder(repo)
+
+	t.Run("build tree with all entry types", func(t *testing.T) {
+		// Create blobs
+		blob1, err := repo.WriteBlob([]byte("content1"))
+		require.Nil(t, err)
+		blob2, err := repo.WriteBlob([]byte("content2"))
+		require.Nil(t, err)
+
+		// Create subtree
+		subTreeID, err := treeBuilder.WriteTreeFromEntries([]TreeEntry{
+			NewEntryBlob("subfile.txt", blob1),
+		})
+		require.Nil(t, err)
+
+		// Create main tree with all types
+		entries := []TreeEntry{
+			NewEntryBlob("file1.txt", blob1),
+			NewEntryBlob("file2.txt", blob2),
+			NewEntryTree("subdir", subTreeID),
+			NewEntryBlobWithPermissions("executable.sh", blob1, 0o755),
+		}
+
+		treeID, err := treeBuilder.WriteTreeFromEntries(entries)
+		assert.Nil(t, err)
+		assert.False(t, treeID.IsZero())
+
+		// Verify tree items
+		items, err := repo.GetTreeItems(treeID)
+		assert.Nil(t, err)
+		assert.Len(t, items, 4)
+	})
+
+	t.Run("build deeply nested tree structure", func(t *testing.T) {
+		blobID, err := repo.WriteBlob([]byte("deep"))
+		require.Nil(t, err)
+
+		// Build 10 levels deep
+		currentTree := blobID
+		for i := 0; i < 10; i++ {
+			if i == 0 {
+				currentTree, err = treeBuilder.WriteTreeFromEntries([]TreeEntry{
+					NewEntryBlob(fmt.Sprintf("file%d.txt", i), blobID),
+				})
+			} else {
+				currentTree, err = treeBuilder.WriteTreeFromEntries([]TreeEntry{
+					NewEntryTree(fmt.Sprintf("level%d", i), currentTree),
+				})
+			}
+			require.Nil(t, err)
+		}
+
+		assert.False(t, currentTree.IsZero())
+	})
+
+	t.Run("build tree with many files", func(t *testing.T) {
+		var entries []TreeEntry
+		for i := 0; i < 50; i++ {
+			blobID, err := repo.WriteBlob([]byte(fmt.Sprintf("content%d", i)))
+			require.Nil(t, err)
+			entries = append(entries, NewEntryBlob(fmt.Sprintf("file%d.txt", i), blobID))
+		}
+
+		treeID, err := treeBuilder.WriteTreeFromEntries(entries)
+		assert.Nil(t, err)
+
+		items, err := repo.GetTreeItems(treeID)
+		assert.Nil(t, err)
+		assert.Len(t, items, 50)
+	})
+}
+
+func TestGetMergeTreeComprehensive(t *testing.T) {
+	t.Run("merge tree with no conflicts", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		repo := CreateTestGitRepository(t, tmpDir, false)
+
+		treeBuilder := NewTreeBuilder(repo)
+		emptyTree, err := treeBuilder.WriteTreeFromEntries(nil)
+		require.Nil(t, err)
+
+		// Create base commit
+		baseCommit, err := repo.Commit(emptyTree, "refs/heads/main", "Base\n", false)
+		require.Nil(t, err)
+
+		// Create branch A
+		blobA, err := repo.WriteBlob([]byte("A"))
+		require.Nil(t, err)
+		treeA, err := treeBuilder.WriteTreeFromEntries([]TreeEntry{
+			NewEntryBlob("fileA.txt", blobA),
+		})
+		require.Nil(t, err)
+		commitA, err := repo.Commit(treeA, "refs/heads/branch-a", "A\n", false)
+		require.Nil(t, err)
+
+		// Create branch B from base
+		err = repo.SetReference("refs/heads/branch-b", baseCommit)
+		require.Nil(t, err)
+		blobB, err := repo.WriteBlob([]byte("B"))
+		require.Nil(t, err)
+		treeB, err := treeBuilder.WriteTreeFromEntries([]TreeEntry{
+			NewEntryBlob("fileB.txt", blobB),
+		})
+		require.Nil(t, err)
+		commitB, err := repo.Commit(treeB, "refs/heads/branch-b", "B\n", false)
+		require.Nil(t, err)
+
+		// Get merge tree
+		mergeTree, err := repo.GetMergeTree(commitA, commitB)
+		assert.Nil(t, err)
+		assert.False(t, mergeTree.IsZero())
+
+		// Verify merge tree contains both files
+		files, err := repo.GetAllFilesInTree(mergeTree)
+		assert.Nil(t, err)
+		assert.Len(t, files, 2)
+	})
+}
+
+func TestTreeEntryTypes(t *testing.T) {
+	tmpDir := t.TempDir()
+	repo := CreateTestGitRepository(t, tmpDir, false)
+
+	blobID, err := repo.WriteBlob([]byte("test"))
+	require.Nil(t, err)
+
+	treeBuilder := NewTreeBuilder(repo)
+	subTreeID, err := treeBuilder.WriteTreeFromEntries([]TreeEntry{
+		NewEntryBlob("file.txt", blobID),
+	})
+	require.Nil(t, err)
+
+	t.Run("blob entry", func(t *testing.T) {
+		entry := NewEntryBlob("test.txt", blobID)
+		assert.Equal(t, "test.txt", entry.getName())
+		assert.Equal(t, blobID, entry.getID())
+	})
+
+	t.Run("tree entry", func(t *testing.T) {
+		entry := NewEntryTree("subdir", subTreeID)
+		assert.Equal(t, "subdir", entry.getName())
+		assert.Equal(t, subTreeID, entry.getID())
+	})
+
+	t.Run("executable entry with permissions", func(t *testing.T) {
+		entry := NewEntryBlobWithPermissions("script.sh", blobID, 0o755)
+		assert.Equal(t, "script.sh", entry.getName())
+		assert.Equal(t, blobID, entry.getID())
+	})
+}
+
+func TestTreeBuilderWithNestedStructure(t *testing.T) {
+	tmpDir := t.TempDir()
+	repo := CreateTestGitRepository(t, tmpDir, false)
+
+	treeBuilder := NewTreeBuilder(repo)
+
+	// Create blobs
+	blob1, err := repo.WriteBlob([]byte("content1"))
+	require.Nil(t, err)
+
+	blob2, err := repo.WriteBlob([]byte("content2"))
+	require.Nil(t, err)
+
+	blob3, err := repo.WriteBlob([]byte("content3"))
+	require.Nil(t, err)
+
+	// Create nested structure: dir1/dir2/file.txt
+	treeID, err := treeBuilder.WriteTreeFromEntries([]TreeEntry{
+		NewEntryBlob("root.txt", blob1),
+		NewEntryBlob("dir1/file1.txt", blob2),
+		NewEntryBlob("dir1/dir2/file2.txt", blob3),
+	})
+	require.Nil(t, err)
+	assert.False(t, treeID.IsZero())
+
+	// Verify all files are in the tree
+	files, err := repo.GetAllFilesInTree(treeID)
+	assert.Nil(t, err)
+	assert.Len(t, files, 3)
+	assert.Contains(t, files, "root.txt")
+	assert.Contains(t, files, "dir1/file1.txt")
+	assert.Contains(t, files, "dir1/dir2/file2.txt")
+}
+
+func TestGetAllFilesInTreeWithExecutables(t *testing.T) {
+	tmpDir := t.TempDir()
+	repo := CreateTestGitRepository(t, tmpDir, false)
+
+	treeBuilder := NewTreeBuilder(repo)
+
+	blob1, err := repo.WriteBlob([]byte("#!/bin/bash\necho hello"))
+	require.Nil(t, err)
+
+	blob2, err := repo.WriteBlob([]byte("regular file"))
+	require.Nil(t, err)
+
+	treeID, err := treeBuilder.WriteTreeFromEntries([]TreeEntry{
+		NewEntryBlobWithPermissions("script.sh", blob1, 0o755),
+		NewEntryBlob("readme.txt", blob2),
+	})
+	require.Nil(t, err)
+
+	files, err := repo.GetAllFilesInTree(treeID)
+	assert.Nil(t, err)
+	assert.Len(t, files, 2)
+	assert.Contains(t, files, "script.sh")
+	assert.Contains(t, files, "readme.txt")
+}
+
+func TestTreeBuilderWithManyFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	repo := CreateTestGitRepository(t, tmpDir, false)
+
+	treeBuilder := NewTreeBuilder(repo)
+
+	// Create many files
+	entries := make([]TreeEntry, 50)
+	for i := 0; i < 50; i++ {
+		blobID, err := repo.WriteBlob([]byte(fmt.Sprintf("content%d", i)))
+		require.Nil(t, err)
+
+		entries[i] = NewEntryBlob(fmt.Sprintf("file%d.txt", i), blobID)
+	}
+
+	treeID, err := treeBuilder.WriteTreeFromEntries(entries)
+	assert.Nil(t, err)
+	assert.False(t, treeID.IsZero())
+
+	// Verify all files
+	files, err := repo.GetAllFilesInTree(treeID)
+	assert.Nil(t, err)
+	assert.Len(t, files, 50)
 }
